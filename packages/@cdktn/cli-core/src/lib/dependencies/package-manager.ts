@@ -521,7 +521,21 @@ class NugetPackageManager extends PackageManager {
   }
 }
 
+/**
+ * Shared base for the Java package managers (Maven and Gradle). Both install from Maven Central, so the check for
+ * whether a given provider version exists is common to both and lives here; the concrete subclasses differ only in how
+ * they declare and list dependencies (pom.xml vs build.gradle).
+ */
 abstract class JavaPackageManager extends PackageManager {
+  /**
+   * Reports whether `packageName@packageVersion` is published on Maven Central by probing the artifact repository for
+   * the version's `.pom` directly: HTTP 200 means present, anything else means not available.
+   *
+   * @param packageName - The Java coordinates in "group.artifact" form, e.g. "com.hashicorp.cdktf-provider-random".
+   * @param packageVersion - The exact version to check for.
+   * @returns `true` if the `.pom` exists on Maven Central, `false` otherwise.
+   * @throws If `packageName` is not in the expected "group.artifact" format.
+   */
   public async isNpmVersionAvailable(
     packageName: string,
     packageVersion: string,
@@ -535,23 +549,21 @@ abstract class JavaPackageManager extends PackageManager {
       );
     }
 
-    const packageIdentifier = parts.pop();
+    const artifactId = parts.pop();
     const groupId = parts.join(".");
 
-    const url = `https://search.maven.org/solrsearch/select?q=g:${groupId}+AND+a:${packageIdentifier}+AND+v:${packageVersion}&rows=5&wt=json`;
+    // Probe the artifact CDN directly for the .pom: 200 = present, anything else = not available.
+    const groupPath = groupId.replace(/\./g, "/");
+    const url = `https://repo1.maven.org/maven2/${groupPath}/${artifactId}/${packageVersion}/${artifactId}-${packageVersion}.pom`;
     logger.debug(
-      `Trying to find package version by querying Maven Central under '${url}'`,
+      `Checking whether ${packageName}@${packageVersion} exists on Maven Central under '${url}'`,
     );
     const response = await fetch(url);
-
-    const json = (await response.json()) as any;
     logger.debug(
-      `Got response from the Maven package search for ${packageName}: ${JSON.stringify(
-        json,
-      )}`,
+      `Maven Central responded HTTP ${response.status} for ${packageName}@${packageVersion}`,
     );
 
-    return (json?.response?.numFound ?? 0) > 0;
+    return response.ok;
   }
 }
 
