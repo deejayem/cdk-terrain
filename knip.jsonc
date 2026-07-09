@@ -66,6 +66,16 @@
     "tools/generate-function-bindings": {
       "project": ["scripts/**/*.ts"]
     },
+    "tools/documentation-generation": {
+      "entry": ["generate-documentation.js"],
+      "ignoreDependencies": [
+        // Resolved on disk via assembliesDir (generate-documentation.js), not
+        // statically imported — jsii-docgen needs a local install of cdktn
+        // in node_modules to resolve the .jsii assembly. constructs is a
+        // peerDependency instead, which knip already treats as used.
+        "cdktn"
+      ]
+    },
     "test": {
       "entry": ["provider-tests/generate-provider-test.js"],
       "project": ["**/*.ts"],
