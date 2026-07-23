@@ -9,7 +9,10 @@ export * from "./terraform-element";
 export * from "./terraform-module";
 export * from "./terraform-provider";
 export * from "./terraform-resource";
+// named export: only the enum is public API, the constraint/label maps stay internal
+export { ProviderFeature } from "./provider-feature-constraints";
 export * from "./terraform-data-source";
+export * from "./terraform-ephemeral-resource";
 export * from "./terraform-output";
 export * from "./complex-computed-list";
 export * from "./resource";
@@ -43,3 +46,4 @@ export * from "./upgrade-id-aspect";
 export * from "./terraform-data-resource";
 // required for JSII because Fn extends from it
 export * from "./functions/terraform-functions.generated";
+export * from "./functions/provider-function";

@@ -17,6 +17,7 @@ import { StackSynthesizer } from "./synthesize/synthesizer";
 const STACK_SYMBOL = Symbol.for("cdktf/TerraformStack");
 import {
   ValidateFunctionVersionSupport,
+  ValidateProviderFunctionTargetSupport,
   ValidateProviderPresence,
 } from "./validations";
 import { VALIDATE_FUNCTION_VERSIONS } from "./features";
@@ -26,6 +27,7 @@ import { TerraformResourceTargets } from "./terraform-resource-targets";
 import { TerraformResource } from "./terraform-resource";
 import {
   renderDatasource,
+  renderEphemeral,
   renderModule,
   renderMoved,
   renderOutput,
@@ -84,6 +86,37 @@ export class TerraformStack extends Construct {
   public dependencies: TerraformStack[] = [];
   public moveTargets: TerraformResourceTargets = new TerraformResourceTargets();
 
+  /**
+   * Terraform functions (`Fn.*`) and provider-defined
+   * (`provider::<name>::<function>`) functions actually rendered while
+   * resolving THIS stack's own elements during the current synthesis pass.
+   *
+   * Usage is stack-owned rather than App-owned: `ValidateFunctionVersionSupport`
+   * / `ValidateProviderFunctionTargetSupport` are registered in this
+   * constructor with the stack itself as scope, and `resolveTargetVersions`
+   * walks context up FROM that scope - i.e. from the stack, not the App root.
+   * Sibling stacks can therefore declare different `targetVersions` via
+   * stack-level `node.setContext`, and a per-App-root usage record would let
+   * one stack's usage be validated against a DIFFERENT stack's targets
+   * (false positives/negatives depending on which sibling happens to be
+   * stricter). Keying usage by the stack that actually rendered it makes
+   * each stack's validation see only its own usage, checked against its own
+   * targets.
+   *
+   * Represents the CURRENT synthesis pass only, not the stack's whole
+   * lifetime: `_runPreparingResolve` clears both sets at the start of every
+   * pass, before re-discovering what that pass actually renders (see
+   * `_recordFunctionUsage`/`_recordProviderFunctionUsage`, called from
+   * `FunctionCall.resolve()` in `tfExpression.ts`).
+   */
+  private readonly _usedFunctions = new Set<string>();
+
+  /**
+   * See `_usedFunctions` - same per-stack, per-pass semantics, for
+   * provider-defined (`provider::<name>::<function>`) function calls.
+   */
+  private readonly _usedProviderFunctions = new Set<string>();
+
   constructor(scope: Construct, id: string) {
     super(scope, id);
 
@@ -101,10 +134,57 @@ export class TerraformStack extends Construct {
     if (this.node.tryGetContext(VALIDATE_FUNCTION_VERSIONS)) {
       this.node.addValidation(new ValidateFunctionVersionSupport(this));
     }
+    this.node.addValidation(new ValidateProviderFunctionTargetSupport(this));
   }
 
   public static isStack(x: any): x is TerraformStack {
     return x !== null && typeof x === "object" && STACK_SYMBOL in x;
+  }
+
+  /**
+   * Records that `functionName` (a `Fn.*` Terraform function) was rendered
+   * while resolving one of this stack's elements during the current
+   * synthesis pass. Called from `FunctionCall.resolve()` in `tfExpression.ts`
+   * - see `_usedFunctions` for why usage is stack-owned.
+   *
+   * @internal
+   */
+  public _recordFunctionUsage(functionName: string): void {
+    this._usedFunctions.add(functionName);
+  }
+
+  /**
+   * Records that `fullName` (a `provider::<name>::<function>` call) was
+   * rendered while resolving one of this stack's elements during the
+   * current synthesis pass. Called from `FunctionCall.resolve()` in
+   * `tfExpression.ts` - see `_usedFunctions` for why usage is stack-owned.
+   *
+   * @internal
+   */
+  public _recordProviderFunctionUsage(fullName: string): void {
+    this._usedProviderFunctions.add(fullName);
+  }
+
+  /**
+   * Returns the `Fn.*` Terraform function names rendered while resolving
+   * this stack's elements during the current synthesis pass. Read by
+   * `ValidateFunctionVersionSupport`.
+   *
+   * @internal
+   */
+  public _getUsedFunctions(): string[] {
+    return Array.from(this._usedFunctions);
+  }
+
+  /**
+   * Returns the `provider::<name>::<function>` calls rendered while
+   * resolving this stack's elements during the current synthesis pass. Read
+   * by `ValidateProviderFunctionTargetSupport`.
+   *
+   * @internal
+   */
+  public _getUsedProviderFunctions(): string[] {
+    return Array.from(this._usedProviderFunctions);
   }
 
   public static of(construct: IConstruct): TerraformStack {
@@ -157,7 +237,49 @@ export class TerraformStack extends Construct {
   public prepareStack() {
     // Ensure we have a backend configured
     this.ensureBackendExists();
-    // A preparing resolve run might add new resources to the stack, e.g. for cross stack references.
+    this._runPreparingResolve();
+  }
+
+  /**
+   * The resolve-discovery half of `prepareStack()`, split out so entry
+   * points that must NOT inject a backend (`Testing.synth`/`synthHcl` -
+   * doing so would add an implicit local backend to snapshots that never
+   * asked for one) can still run the part that discovers current-pass
+   * provider-feature and Terraform-function usage.
+   *
+   * Clears this stack's own `_usedFunctions`/`_usedProviderFunctions` sets
+   * first - this stack's per-pass epoch for Terraform-function usage.
+   * Because the reset lives here, once per stack, every validation-enabled
+   * entry point (`App.synth`, `Testing.synth`/`synthHcl`,
+   * `StackSynthesizer.synthesize`) gets it for free just by calling
+   * `prepareStack()`/`_runPreparingResolve()` - see `_usedFunctions` for why
+   * usage is keyed by stack.
+   *
+   * Then deactivates every element's stale `resolve-discovered`
+   * provider-feature registrations (see
+   * `TerraformElement._resetResolveDiscoveredProviderFeatureUsage`) - so
+   * usage from an earlier synthesis pass over this same stack can't survive
+   * into this one - then resolves every element's `toTerraform()`, which is
+   * what re-discovers this pass's actual usage (both provider-feature usage
+   * via `markWriteOnlyAttribute`, and Terraform-function usage via
+   * `FunctionCall.resolve()`, which records into `_recordFunctionUsage`/
+   * `_recordProviderFunctionUsage` above). A preparing resolve run might
+   * also add new resources to the stack, e.g. for cross stack references.
+   * Cross-stack references stay sound even though this method skips THIS
+   * stack's `ensureBackendExists()`: resolving one materializes the ORIGIN
+   * stack's backend on demand (`registerIncomingCrossStackReference` calls
+   * `fromStack.ensureBackendExists()` itself), so only the synthesizing
+   * stack's own backend block is left uninjected - which is exactly what
+   * the `Testing.synth`/`synthHcl` callers want.
+   *
+   * @internal
+   */
+  public _runPreparingResolve() {
+    this._usedFunctions.clear();
+    this._usedProviderFunctions.clear();
+    terraformElements(this).forEach((e) =>
+      e._resetResolveDiscoveredProviderFeatureUsage(),
+    );
     terraformElements(this).forEach((e) =>
       resolve(this, e.toTerraform(), true),
     );
@@ -279,6 +401,12 @@ export class TerraformStack extends Construct {
 
         if (frag.data) {
           const { hcl, metadata } = renderDatasource(frag.data);
+          deepMerge(tfMeta, metadata);
+          res = [res, hcl].join("\n");
+        }
+
+        if (frag.ephemeral) {
+          const { hcl, metadata } = renderEphemeral(frag.ephemeral);
           deepMerge(tfMeta, metadata);
           res = [res, hcl].join("\n");
         }

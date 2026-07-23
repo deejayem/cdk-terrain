@@ -1,0 +1,192 @@
+{
+  "provider_schemas": {
+    "registry.terraform.io/hashicorp/example": {
+      "resource_schemas": {},
+      "functions": {
+        "join_strings": {
+          "description": "Joins the given strings together using the provided separator.",
+          "summary": "Join strings with a separator",
+          "return_type": "string",
+          "parameters": [{ "name": "separator", "type": "string" }],
+          "variadic_parameter": { "name": "values", "type": "string" }
+        },
+        "sum": {
+          "description": "Adds up a default starting value and any number of addends.",
+          "summary": "Sum numbers",
+          "return_type": "number",
+          "parameters": [{ "name": "default", "type": "number" }],
+          "variadic_parameter": { "name": "addends", "type": "number" }
+        },
+        "list_prefixed_names": {
+          "description": "Returns a list of names prefixed with the given prefix.",
+          "summary": "List prefixed names",
+          "return_type": ["list", "string"],
+          "parameters": [{ "name": "prefix", "type": "string" }]
+        },
+        "condition_if": {
+          "description": "Returns true_value if condition is true, otherwise returns false_value. The dynamic return type allows either branch to be a value of any type.",
+          "summary": "Dynamic conditional",
+          "return_type": "dynamic",
+          "parameters": [
+            { "name": "condition", "type": "bool" },
+            { "name": "true_value", "type": "dynamic" },
+            { "name": "false_value", "type": "dynamic" }
+          ]
+        },
+        "list_numbers": {
+          "description": "Returns a list of numbers counting up from 1 to the given count.",
+          "summary": "List numbers",
+          "return_type": ["list", "number"],
+          "parameters": [{ "name": "count", "type": "number" }]
+        },
+        "flag_set": {
+          "description": "Returns true if any flag in the given set of flags is true.",
+          "summary": "Any flag set",
+          "return_type": "bool",
+          "parameters": [{ "name": "flags", "type": ["set", "bool"] }]
+        },
+        "flags_for_seed": {
+          "description": "Returns a set of flags derived from the given seed - used to prove a set(bool) RETURN can be fed directly into another function's set(bool) PARAMETER (see flag_set above).",
+          "summary": "Flags for seed",
+          "return_type": ["set", "bool"],
+          "parameters": [{ "name": "seed", "type": "string" }]
+        },
+        "flags_ordered": {
+          "description": "Returns true if any flag in the given ordered list of flags is true.",
+          "summary": "Any flag set (ordered)",
+          "return_type": "bool",
+          "parameters": [{ "name": "flags", "type": ["list", "bool"] }]
+        },
+        "describe_configs": {
+          "description": "Renders the given list of config objects as a single string.",
+          "summary": "Describe configs",
+          "return_type": "string",
+          "parameters": [
+            {
+              "name": "configs",
+              "type": ["list", ["object", { "enabled": "bool" }]]
+            }
+          ]
+        },
+        "nested_list": {
+          "description": "Flattens a matrix (a list of lists of strings) into a single string.",
+          "summary": "Flatten a matrix",
+          "return_type": "string",
+          "parameters": [
+            { "name": "matrix", "type": ["list", ["list", "string"]] }
+          ]
+        },
+        "dedupe_name_groups": {
+          "description": "Deduplicates each group of names, returning a list of name sets.",
+          "summary": "Dedupe name groups",
+          "return_type": ["list", ["set", "string"]],
+          "parameters": [
+            { "name": "name_groups", "type": ["list", ["set", "string"]] }
+          ]
+        },
+        "unique_name_lists": {
+          "description": "Returns the distinct name lists among the given ones.",
+          "summary": "Unique name lists",
+          "return_type": ["set", ["list", "string"]],
+          "parameters": [
+            { "name": "name_lists", "type": ["set", ["list", "string"]] }
+          ]
+        },
+        "build_info": {
+          "description": "Returns an object describing the build that produced the given seed.",
+          "summary": "Build info",
+          "return_type": [
+            "object",
+            { "version": "string", "revision": "string" }
+          ],
+          "parameters": [{ "name": "seed", "type": "string" }]
+        },
+        "tag_map": {
+          "description": "Renders the given map of string tags as a single string.",
+          "summary": "Render tags",
+          "return_type": "string",
+          "parameters": [{ "name": "tags", "type": ["map", "string"] }]
+        },
+        "default_tags": {
+          "description": "Returns a default map of string tags derived from the given prefix - used to prove a map(string) RETURN can be fed directly into another function's map(string) PARAMETER (see tag_map above).",
+          "summary": "Default tags",
+          "return_type": ["map", "string"],
+          "parameters": [{ "name": "prefix", "type": "string" }]
+        },
+        "count_by_tag": {
+          "description": "Returns a map of counts keyed by tag for the given prefix.",
+          "summary": "Count by tag",
+          "return_type": ["map", "number"],
+          "parameters": [{ "name": "prefix", "type": "string" }]
+        },
+        "flags_by_tag": {
+          "description": "Returns a map of flags keyed by tag for the given prefix.",
+          "summary": "Flags by tag",
+          "return_type": ["map", "bool"],
+          "parameters": [{ "name": "prefix", "type": "string" }]
+        },
+        "configs_by_tag": {
+          "description": "Returns a map of config objects keyed by tag for the given prefix.",
+          "summary": "Configs by tag",
+          "return_type": ["map", ["object", { "enabled": "bool" }]],
+          "parameters": [{ "name": "prefix", "type": "string" }]
+        },
+        "config_map": {
+          "description": "Renders the given map of config objects as a single string.",
+          "summary": "Render configs",
+          "return_type": "string",
+          "parameters": [
+            {
+              "name": "configs",
+              "type": ["map", ["object", { "enabled": "bool" }]]
+            }
+          ]
+        },
+        "legacy_helper": {
+          "description": "A deprecated helper kept around for backwards compatibility.",
+          "summary": "Legacy helper",
+          "deprecation_message": "Use new_helper instead.",
+          "return_type": "string",
+          "parameters": [{ "name": "input", "type": "string" }]
+        },
+        "trailing_nullable": {
+          "description": "Greets the given name, optionally with a custom greeting.",
+          "summary": "Greet with an optional greeting",
+          "return_type": "string",
+          "parameters": [
+            { "name": "name", "type": "string" },
+            {
+              "name": "greeting",
+              "type": "string",
+              "is_nullable": true
+            }
+          ]
+        },
+        "mid_nullable": {
+          "description": "Joins a possibly-null prefix with a required suffix.",
+          "summary": "Join with a nullable prefix",
+          "return_type": "string",
+          "parameters": [
+            {
+              "name": "prefix",
+              "type": "string",
+              "is_nullable": true
+            },
+            { "name": "suffix", "type": "string" }
+          ]
+        },
+        "variadic_nullable": {
+          "description": "Joins a label with any number of possibly-null items.",
+          "summary": "Join with nullable items",
+          "return_type": "string",
+          "parameters": [{ "name": "label", "type": "string" }],
+          "variadic_parameter": {
+            "name": "items",
+            "type": "string",
+            "is_nullable": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -5,8 +5,10 @@ import {
   Language,
   Errors,
   CONFIG_DEFAULTS,
+  validateTargetVersions,
   type LanguageOptions,
   type TerraformDependencyConstraint,
+  type TerraformTargetVersions,
 } from "@cdktn/commons";
 import path from "path";
 import { logger } from "@cdktn/commons";
@@ -85,6 +87,24 @@ export class CdktfConfig {
       );
     }
     return options;
+  }
+
+  public get targetVersions(): TerraformTargetVersions | undefined {
+    const targetVersions = this.getProperty("targetVersions") as
+      | TerraformTargetVersions
+      | undefined;
+
+    const problems = validateTargetVersions(targetVersions);
+    if (problems.length > 0) {
+      logger.warn(
+        `cdktf.json \`targetVersions\` is invalid and will be ignored:\n  ${problems.join(
+          "\n  ",
+        )}`,
+      );
+      return undefined;
+    }
+
+    return targetVersions;
   }
 
   public get terraformProviders(): (TerraformDependencyConstraint | string)[] {

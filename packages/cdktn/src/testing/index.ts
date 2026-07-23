@@ -106,6 +106,16 @@ export class Testing {
   public static synth(stack: TerraformStack, runValidations = false) {
     invokeAspects(stack);
     if (runValidations) {
+      // Deliberately not the full `prepareStack()` - that also injects a
+      // local backend via `ensureBackendExists()`, which would add a
+      // backend block to every existing snapshot that never asked for one.
+      // Only run the resolve/reset half that (re-)discovers current-pass
+      // provider-feature and Terraform-function usage, so the validations
+      // below see what this pass actually renders instead of stale usage
+      // (or none at all) left over from a previous call against the same
+      // stack. `_runPreparingResolve` clears the stack's own function-usage
+      // sets itself before rediscovering - see `TerraformStack._usedFunctions`.
+      stack._runPreparingResolve();
       stack.runAllValidations();
     }
 
@@ -148,6 +158,9 @@ export class Testing {
   ) {
     invokeAspects(stack);
     if (runValidations) {
+      // See the matching comment in Testing.synth(): only the resolve/reset
+      // discovery half of prepareStack(), never the backend-injecting half.
+      stack._runPreparingResolve();
       stack.runAllValidations();
     }
 

@@ -29,6 +29,25 @@ export class StackSynthesizer implements IStackSynthesizer {
   synthesize(session: ISynthesisSession) {
     invokeAspects(this.stack);
 
+    if (!session.stacksPrepared) {
+      // This session wasn't built by App.synth() (which already prepared
+      // every stack up front) - prepare this stack ourselves so
+      // resolve-discovered provider-feature usage and Terraform-function
+      // usage are rediscovered for the current pass before validations run
+      // below. See ISynthesisSession.stacksPrepared.
+      //
+      // Terraform-function usage is recorded per-stack (see
+      // `TerraformStack._usedFunctions`) and `prepareStack()` clears this
+      // stack's own usage sets itself, as the first step of
+      // `_runPreparingResolve()`, before rediscovering them. Without this,
+      // a function rendered by an earlier pass over this same stack (e.g. a
+      // previous direct call to this same synthesize()) would keep failing
+      // target-version validation in a later pass even after that usage is
+      // gone, breaking the per-synthesis-epoch guarantee that App.synth()
+      // and Testing.synth()/synthHcl() already provide.
+      this.stack.prepareStack();
+    }
+
     if (this.stack.hasResourceMove()) {
       // TODO(target-versions): this probes the locally installed binary during
       // synth. Migrate to ValidateFeatureTargetSupport (declared cdktf.json

@@ -13,12 +13,72 @@ export interface ProviderSchema {
   format_version?: "0.1" | "0.2";
   provider_schemas?: { [fqpn: string]: Provider };
   provider_versions?: { [fqpn: string]: string };
+  /**
+   * Name of the CLI (terraform/opentofu) that fetched this schema, stamped
+   * by readProviderSchema. Used to reason about which newer-protocol
+   * sections (functions, ephemeral resources, ...) this particular fetch
+   * could possibly have emitted.
+   */
+  cli_name?: string;
+  /**
+   * Version of the CLI that fetched this schema, e.g. "1.7.5".
+   */
+  cli_version?: string;
 }
 
 export interface Provider {
   provider: Schema;
   resource_schemas: { [type: string]: Schema };
   data_source_schemas: { [type: string]: Schema };
+  // list_resource_schemas, action_schemas and state_store_schemas are real
+  // sections of `terraform providers schema -json` (Terraform-only today;
+  // OpenTofu emits none). They are intentionally left untyped and
+  // unconsumed: they pass through parse/sanitize/cache verbatim so cached
+  // schemas stay complete, but no bindings are generated for them yet
+  // (deferred - RFC-04 Phase 4; re-evaluate when opentofu/opentofu#3787
+  // lands).
+  ephemeral_resource_schemas?: { [type: string]: Schema };
+  functions?: { [name: string]: FunctionSignature };
+  resource_identity_schemas?: { [type: string]: ResourceIdentitySchema };
+}
+
+/**
+ * A single parameter (or the variadic parameter) of a provider function.
+ * The providers-schema JSON fields are exactly: name, description,
+ * is_nullable, type. `is_nullable` derives from the plugin-protocol
+ * `AllowNullValue` field and means the parameter accepts an explicit null
+ * argument. Other protocol-only fields (e.g. `allow_unknown_values`) never
+ * reach the providers-schema JSON.
+ */
+export interface FunctionParameter {
+  name?: string;
+  type: AttributeType;
+  description?: string;
+  is_nullable?: boolean;
+}
+
+export interface FunctionSignature {
+  description?: string;
+  summary?: string;
+  // Emitted by Terraform (>=1.8) for provider-defined functions; OpenTofu
+  // does not emit this field at all - a real divergence, do not "fix" by
+  // expecting parity.
+  deprecation_message?: string;
+  return_type: AttributeType;
+  parameters?: FunctionParameter[];
+  variadic_parameter?: FunctionParameter;
+}
+
+export interface IdentityAttribute {
+  type?: AttributeType;
+  description?: string;
+  required_for_import?: boolean;
+  optional_for_import?: boolean;
+}
+
+export interface ResourceIdentitySchema {
+  version: number;
+  attributes: { [name: string]: IdentityAttribute };
 }
 
 export interface Schema {
@@ -58,6 +118,7 @@ interface BaseAttribute {
   optional?: boolean;
   computed?: boolean;
   sensitive?: boolean;
+  write_only?: boolean;
 }
 
 interface NestedTypeAttribute extends BaseAttribute {

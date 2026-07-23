@@ -8,12 +8,26 @@ import { sanitizedComment } from "../sanitized-comments";
 export class ResourceEmitter {
   attributesEmitter: AttributesEmitter;
 
-  constructor(private readonly code: CodeMaker) {
+  constructor(
+    private readonly code: CodeMaker,
+    private readonly importExtension: string,
+  ) {
     this.attributesEmitter = new AttributesEmitter(this.code);
   }
 
   public emit(resource: ResourceModel) {
     this.code.line();
+
+    if (resource.isProvider && resource.providerFunctionsModel) {
+      // Sibling-directory import: providers/<provider>/provider/index.ts
+      // (the emitted file) and providers/<provider>/provider-functions/
+      // index.ts are siblings under providers/<provider>/, so unlike the
+      // child-folder struct imports this one has to step up a level.
+      this.code.line(
+        `import { ${resource.providerFunctionsModel.className} } from '../provider-functions/index${this.importExtension}';`,
+      );
+    }
+
     const comment = sanitizedComment(this.code);
     comment.line(
       `Represents a {@link ${resource.linkToDocs} ${resource.terraformResourceType}}`,
@@ -26,8 +40,10 @@ export class ResourceEmitter {
     this.emitHeader("STATIC PROPERTIES");
     this.emitStaticProperties(resource);
 
-    this.emitHeader("STATIC Methods");
-    this.emitStaticMethods(resource);
+    if (!resource.isEphemeralResource) {
+      this.emitHeader("STATIC Methods");
+      this.emitStaticMethods(resource);
+    }
 
     this.emitHeader("INITIALIZER");
     this.emitInitializer(resource);
@@ -35,12 +51,49 @@ export class ResourceEmitter {
     this.emitHeader("ATTRIBUTES");
     this.emitResourceAttributes(resource);
 
+    if (resource.isProvider && resource.providerFunctionsModel) {
+      this.emitHeader("PROVIDER-DEFINED FUNCTIONS");
+      this.emitFunctionsGetter(resource.providerFunctionsModel);
+    }
+
     // synthesis
     this.emitHeader("SYNTHESIS");
     this.emitResourceSynthesis(resource);
     this.emitHclResourceSynthesis(resource);
 
     this.code.closeBlock(); // construct
+  }
+
+  // Emits a memoized `functions` getter on a provider class that declares
+  // provider-defined functions. The local name to invoke functions under is
+  // derived from `this.terraformResourceType`, not baked in as the schema
+  // name constant: terraform-provider.ts keys both `required_providers` and
+  // the `provider` block directly off `terraformResourceType`, so whatever
+  // this instance's `terraformResourceType` is IS its correct
+  // required_providers local name (it already accounts for a `name`
+  // override in the cdktf.json provider constraint, see
+  // ConstructsMakerProviderTarget/TerraformProviderConstraint) - the
+  // instance always knows its own correct local name, so there is no need
+  // for a providerLocalName override parameter here.
+  private emitFunctionsGetter(
+    model: NonNullable<ResourceModel["providerFunctionsModel"]>,
+  ) {
+    this.code.line(`private _functions?: ${model.className};`);
+    this.code.line();
+
+    const comment = sanitizedComment(this.code);
+    comment.line(
+      `Provider-defined functions of the ${model.providerName} provider.`,
+    );
+    comment.end();
+    this.code.openBlock(`public get functions(): ${model.className}`);
+    this.code.openBlock(`if (!this._functions)`);
+    this.code.line(
+      `this._functions = new ${model.className}(this.terraformResourceType);`,
+    );
+    this.code.closeBlock();
+    this.code.line(`return this._functions;`);
+    this.code.closeBlock();
   }
 
   private emitHeader(title: string) {
@@ -86,8 +139,13 @@ export class ResourceEmitter {
     );
     this.code.open(`const attrs = {`);
 
+    const registerWriteOnlyUsage = this.supportsWriteOnlyRegistration(resource);
     for (const att of resource.synthesizableAttributes) {
-      this.attributesEmitter.emitToHclTerraform(att, false);
+      this.attributesEmitter.emitToHclTerraform(
+        att,
+        false,
+        registerWriteOnlyUsage,
+      );
     }
 
     this.code.close(`};`);
@@ -112,12 +170,36 @@ export class ResourceEmitter {
     );
     this.code.open(`return {`);
 
+    const registerWriteOnlyUsage = this.supportsWriteOnlyRegistration(resource);
     for (const att of resource.synthesizableAttributes) {
-      this.attributesEmitter.emitToTerraform(att, false);
+      this.attributesEmitter.emitToTerraform(
+        att,
+        false,
+        registerWriteOnlyUsage,
+      );
     }
 
     this.code.close(`};`);
     this.code.closeBlock();
+  }
+
+  // `markWriteOnlyAttribute` (called from generated `synthesizeAttributes()`/
+  // `synthesizeHclAttributes()` for write-only attributes, see
+  // AttributesEmitter#emitToTerraform/#emitToHclTerraform) lives on
+  // TerraformResource - so only managed resources can register write-only
+  // usage; data sources, providers, and ephemeral resources only get the
+  // deprecated getter.
+  //
+  // write-only is fundamentally a state concept - the value is passed to
+  // the provider but never persisted to state - so gating this on
+  // TerraformResource is a semantic choice, not a capability one: ephemeral
+  // resources have no state at all, and, consistent with that, no provider
+  // schema in the RFC-04 sweep (including vault's 16 ephemeral resources)
+  // marks an ephemeral attribute write_only. So ephemeral classes
+  // deliberately land in the same "getter only" bucket as data sources and
+  // providers.
+  private supportsWriteOnlyRegistration(resource: ResourceModel): boolean {
+    return resource.parentClassName === "TerraformResource";
   }
 
   private emitResourceAttributes(resource: ResourceModel) {
@@ -136,7 +218,13 @@ export class ResourceEmitter {
     comment.line(
       `Create a new {@link ${resource.linkToDocs} ${
         resource.terraformResourceType
-      }} ${resource.isDataSource ? "Data Source" : "Resource"}`,
+      }} ${
+        resource.isDataSource
+          ? "Data Source"
+          : resource.isEphemeralResource
+            ? "Ephemeral Resource"
+            : "Resource"
+      }`,
     );
     comment.line(``);
     comment.line(`@param scope The scope in which to define this construct`);
@@ -151,6 +239,8 @@ export class ResourceEmitter {
 
     if (resource.isProvider) {
       this.emitProviderSuper(resource);
+    } else if (resource.isEphemeralResource) {
+      this.emitEphemeralResourceSuper(resource);
     } else {
       this.emitResourceSuper(resource);
     }
@@ -181,6 +271,20 @@ export class ResourceEmitter {
     this.code.line(`lifecycle: config.lifecycle,`);
     this.code.line(`provisioners: config.provisioners,`);
     this.code.line(`connection: config.connection,`);
+    this.code.line(`forEach: config.forEach`);
+    this.code.close(`});`);
+  }
+
+  private emitEphemeralResourceSuper(resource: ResourceModel) {
+    this.code.open(`super(scope, id, {`);
+    this.code.line(
+      `terraformResourceType: '${resource.terraformResourceType}',`,
+    );
+    this.emitTerraformGeneratorMetadata(resource);
+    this.code.line(`provider: config.provider,`);
+    this.code.line(`dependsOn: config.dependsOn,`);
+    this.code.line(`count: config.count,`);
+    this.code.line(`lifecycle: config.lifecycle,`);
     this.code.line(`forEach: config.forEach`);
     this.code.close(`});`);
   }

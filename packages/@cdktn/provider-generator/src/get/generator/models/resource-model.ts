@@ -6,6 +6,7 @@ import { FQPN, parseFQPN, ProviderName } from "@cdktn/provider-schema";
 import { AttributeModel } from "./attribute-model";
 import { Struct, ConfigStruct } from "./struct";
 import { Schema } from "@cdktn/commons";
+import { ProviderFunctionsModel } from "./provider-function-model";
 
 // Limit is 1200 to prevent stack size error.
 // Could increase now that calculation is more accurate;
@@ -42,6 +43,13 @@ export class ResourceModel {
    * to be able to use two providers with the same name
    */
   public terraformProviderName: string;
+  /*
+   * Only set (by provider-generator.ts) when isProvider is true and the
+   * provider schema declares provider-defined functions - drives whether
+   * ResourceEmitter emits the memoized `functions` getter and its
+   * cross-directory import of the sibling provider-functions/index.ts file.
+   */
+  public providerFunctionsModel?: ProviderFunctionsModel;
   public fileName: string;
   public attributes: AttributeModel[];
   public schema: Schema;
@@ -81,7 +89,11 @@ export class ResourceModel {
   }
 
   public get configStruct() {
-    return new ConfigStruct(this.configStructName, this.attributes);
+    return new ConfigStruct(
+      this.configStructName,
+      this.attributes,
+      this.isEphemeralResource ? "TerraformEphemeralMetaArguments" : undefined,
+    );
   }
 
   public get synthesizableAttributes(): AttributeModel[] {
@@ -103,6 +115,8 @@ export class ResourceModel {
     if (this.isProvider) return base;
     if (this.isDataSource)
       return `${base}/data-sources/${this.terraformDocName}`;
+    if (this.isEphemeralResource)
+      return `${base}/ephemeral-resources/${this.terraformDocName}`;
     return `${base}/resources/${this.terraformDocName}`;
   }
 
@@ -114,12 +128,18 @@ export class ResourceModel {
     return this.terraformSchemaType === "data_source";
   }
 
+  public get isEphemeralResource(): boolean {
+    return this.terraformSchemaType === "ephemeral_resource";
+  }
+
   public get parentClassName(): string {
     return this.isProvider
       ? "TerraformProvider"
       : this.isDataSource
         ? "TerraformDataSource"
-        : "TerraformResource";
+        : this.isEphemeralResource
+          ? "TerraformEphemeralResource"
+          : "TerraformResource";
   }
 
   public get terraformResourceType(): string {
@@ -127,7 +147,9 @@ export class ResourceModel {
       ? this.terraformProviderName
       : this.isDataSource
         ? this.terraformType.replace(/^data_/, "")
-        : this.terraformType;
+        : this.isEphemeralResource
+          ? this.terraformType.replace(/^ephemeral_/, "")
+          : this.terraformType;
   }
 
   public get terraformDocName(): string {

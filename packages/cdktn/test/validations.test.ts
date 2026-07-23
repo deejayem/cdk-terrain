@@ -16,7 +16,6 @@ import {
 import { TestProvider } from "./helper/provider";
 import { createTmpHelper } from "./helper/tmp";
 import { terraformBinaryName } from "../src/util";
-import { resetFunctionUsageRegistry } from "../src/functions/usage-registry";
 import { VALIDATE_FUNCTION_VERSIONS } from "../src/features";
 
 const tmp = createTmpHelper();
@@ -240,6 +239,16 @@ describe("resolveTargetVersions", () => {
       "must declare at least one product",
     );
   });
+
+  test("accepts a pinned single version as a valid range", () => {
+    const stack = stackWithContext({
+      targetVersions: { terraform: "1.11.0" },
+    });
+    expect(resolveTargetVersions(stack)).toEqual({
+      targets: { terraform: "1.11.0" },
+      errors: [],
+    });
+  });
 });
 
 describe("checkFeatureSupportedByTargets", () => {
@@ -308,6 +317,78 @@ describe("checkFeatureSupportedByTargets", () => {
         { terraform: "1.8.x || 1.9.x" },
       ),
     ).toEqual([]);
+  });
+
+  test("passes when the declared floor is exactly the feature's minimum", () => {
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.8.0" },
+        { terraform: ">=1.8.0" },
+      ),
+    ).toEqual([]);
+  });
+
+  test("passes when the project pins exactly the feature's minimum version", () => {
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.11.0" },
+        { terraform: "1.11.0" },
+      ),
+    ).toEqual([]);
+  });
+
+  test("fails when the project pins a version below the minimum", () => {
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.11.0" },
+        { terraform: "1.10.5" },
+      ),
+    ).toEqual([
+      "some feature requires terraform >=1.11.0, but the project targets terraform 1.10.5.",
+    ]);
+  });
+
+  test("fails when the declared floor is one patch below the minimum", () => {
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.10.0" },
+        { terraform: ">=1.9.9" },
+      ),
+    ).toEqual([
+      "some feature requires terraform >=1.10.0, but the project targets terraform >=1.9.9.",
+    ]);
+  });
+
+  test("returns no errors for an empty targets object", () => {
+    // Callers always resolve targets via resolveTargetVersions first, which
+    // rejects {} with a "must declare at least one product" error - this
+    // documents that the comparator itself just has nothing to check.
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.8.0" },
+        {},
+      ),
+    ).toEqual([]);
+  });
+
+  test("treats a prerelease floor as below the minimum", () => {
+    // Inherent npm-semver subset semantics: ">=1.11.0-beta1" admits
+    // prerelease versions that ">=1.11.0" does not, so it is not a subset.
+    // Documented here as current (intentional-if-surprising) behavior.
+    expect(
+      checkFeatureSupportedByTargets(
+        "some feature",
+        { terraform: ">=1.11.0" },
+        { terraform: ">=1.11.0-beta1" },
+      ),
+    ).toEqual([
+      "some feature requires terraform >=1.11.0, but the project targets terraform >=1.11.0-beta1.",
+    ]);
   });
 });
 
@@ -397,10 +478,6 @@ describe("ValidateFeatureTargetSupport", () => {
 });
 
 describe("ValidateFunctionVersionSupport", () => {
-  beforeEach(() => {
-    resetFunctionUsageRegistry();
-  });
-
   function appWithStack(context?: Record<string, any>) {
     const outdir = tmp("cdktf.outdir.");
     const app = Testing.stubVersion(
@@ -552,5 +629,112 @@ describe("ValidateFunctionVersionSupport", () => {
     // no validation registered: even a function outside the default baseline
     // does not fail synth
     expect(() => app.synth()).not.toThrow();
+  });
+
+  test("does not leak Fn usage from one App into a later, unrelated App in the same process", () => {
+    // Usage is recorded on the TerraformStack instance whose elements
+    // rendered it (see TerraformStack._usedFunctions), not in a
+    // process-global registry, so isolation between App trees is
+    // structural, not something that depends on a reset running between
+    // tests.
+    const { app: app1, testResource: testResource1 } = appWithStack({
+      [VALIDATE_FUNCTION_VERSIONS]: "true",
+      targetVersions: { terraform: ">=1.9.0", opentofu: ">=1.7.0" },
+    });
+    testResource1.node.addValidation(
+      new ValidateFunctionVersionSupport(testResource1),
+    );
+    new TestResource(testResource1, "usesTemplatestring", {
+      name: Fn.templatestring("$${greeting}", { greeting: "hello" }),
+    });
+    expect(() => app1.synth()).not.toThrow();
+
+    // app2 targets the default baseline (which does NOT support
+    // templatestring) but never calls Fn.templatestring itself.
+    const { app: app2, testResource: testResource2 } = appWithStack({
+      [VALIDATE_FUNCTION_VERSIONS]: "true",
+    });
+    testResource2.node.addValidation(
+      new ValidateFunctionVersionSupport(testResource2),
+    );
+    expect(() => app2.synth()).not.toThrow();
+  });
+
+  test("still fires when a second, unrelated App is constructed between usage and synth of the first (interleaved Apps)", () => {
+    // Regression test against the released call-time design: recording into
+    // a single process-global registry that every App constructor reset
+    // meant App B's construction silently wiped out the usage App A had
+    // already recorded for Fn.templatestring() before App A ever got to
+    // synth() - a false negative that skipped target-version validation
+    // entirely. Recording at token-RESOLVE time, onto the stack being
+    // resolved, is immune to this: App A's usage is recorded during App A's
+    // own prepareStack pass and read back from App A's own stacks.
+    const { app: app1, testResource: testResource1 } = appWithStack({
+      [VALIDATE_FUNCTION_VERSIONS]: "true",
+    });
+    new TestResource(testResource1, "usesTemplatestring", {
+      name: Fn.templatestring("$${greeting}", { greeting: "hello" }),
+    });
+
+    // App B is constructed here, strictly between App A's usage and App
+    // A's synth() call - the interleaving that used to trigger the bug.
+    appWithStack({ [VALIDATE_FUNCTION_VERSIONS]: "true" });
+
+    expect(() => app1.synth()).toThrowErrorMatchingInlineSnapshot(`
+      "Validation failed with the following errors:
+        [MyStack] Terraform function "templatestring" requires terraform >=1.9.0, but the project targets terraform >=1.5.7. It is available in terraform >=1.9.0 and opentofu >=1.7.0.
+        [MyStack] Terraform function "templatestring" requires opentofu >=1.7.0, but the project targets opentofu >=1.6.0. It is available in terraform >=1.9.0 and opentofu >=1.7.0.
+
+      If you wish to ignore these validations, pass 'skipValidation: true' to your App configuration.
+      "
+    `);
+  });
+
+  // Usage lives on each TerraformStack instance (not in any registry keyed
+  // by the shared App root) because ValidateFunctionVersionSupport is
+  // registered with the STACK as scope and resolveTargetVersions() walks
+  // context up from that scope - sibling stacks can declare different
+  // targetVersions via stack-level context. Any usage store shared across
+  // siblings would validate one stack's usage against a DIFFERENT sibling
+  // stack's targets; here Stack2 uses a function gated to a floor it
+  // doesn't declare, while Stack1 (a stricter, compatible sibling) declares
+  // no usage at all - shared usage would incorrectly attribute Stack2's
+  // usage check against Stack1's targets too (or vice versa).
+  test("sibling stacks with different declared targets are validated independently: an incompatible stack's usage does not leak onto a compatible sibling", () => {
+    const outdir = tmp("cdktf.outdir.");
+    const app = Testing.stubVersion(new App({ stackTraces: false, outdir }));
+
+    const compatible = new TerraformStack(app, "CompatibleStack");
+    compatible.node.setContext("targetVersions", {
+      terraform: ">=1.9.0",
+      opentofu: ">=1.7.0",
+    });
+    new TestProvider(compatible, "provider", {});
+    compatible.node.addValidation(
+      new ValidateFunctionVersionSupport(compatible),
+    );
+    new TestResource(compatible, "harmless", {
+      name: "no gated function used here",
+    });
+
+    const incompatible = new TerraformStack(app, "IncompatibleStack");
+    new TestProvider(incompatible, "provider", {});
+    incompatible.node.addValidation(
+      new ValidateFunctionVersionSupport(incompatible),
+    );
+    new TestResource(incompatible, "usesTemplatestring", {
+      name: Fn.templatestring("$${greeting}", { greeting: "hello" }),
+    });
+
+    let error: Error | undefined;
+    try {
+      app.synth();
+    } catch (e) {
+      error = e as Error;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.message).toContain("[IncompatibleStack");
+    expect(error!.message).not.toContain("[CompatibleStack");
   });
 });

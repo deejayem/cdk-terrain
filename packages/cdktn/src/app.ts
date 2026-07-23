@@ -156,6 +156,7 @@ export class App extends Construct {
       outdir: this.outdir,
       skipValidation: this.skipValidation,
       manifest: this.manifest,
+      stacksPrepared: true,
     };
 
     const stacks = this.node

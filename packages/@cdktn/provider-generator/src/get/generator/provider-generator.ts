@@ -10,9 +10,18 @@ import {
   TerraformProviderConstraint,
 } from "@cdktn/commons";
 import { FQPN, parseFQPN, ProviderName } from "@cdktn/provider-schema";
-import { ResourceModel } from "./models";
+import {
+  ProviderFunctionsModel,
+  ResourceModel,
+  assertNoFunctionsGetterCollision,
+  buildProviderFunctionsModel,
+} from "./models";
 import { ResourceParser } from "./resource-parser";
-import { ResourceEmitter, StructEmitter } from "./emitter";
+import {
+  ProviderFunctionsEmitter,
+  ResourceEmitter,
+  StructEmitter,
+} from "./emitter";
 
 export interface TerraformProviderGeneratorOptions {
   /**
@@ -101,6 +110,7 @@ export class TerraformProviderGenerator {
   private resourceParser = new ResourceParser();
   private resourceEmitter: ResourceEmitter;
   private structEmitter: StructEmitter;
+  private providerFunctionsEmitter: ProviderFunctionsEmitter;
   private readonly importExtension: string;
   public versions: { [fqpn: string]: string | undefined } = {};
 
@@ -111,8 +121,9 @@ export class TerraformProviderGenerator {
   ) {
     this.code.indentation = 2;
     this.importExtension = options.importExtension ?? "";
-    this.resourceEmitter = new ResourceEmitter(this.code);
+    this.resourceEmitter = new ResourceEmitter(this.code, this.importExtension);
     this.structEmitter = new StructEmitter(this.code, this.importExtension);
+    this.providerFunctionsEmitter = new ProviderFunctionsEmitter(this.code);
   }
 
   private getProviderByConstraint(
@@ -185,7 +196,26 @@ export class TerraformProviderGenerator {
         ),
     );
 
-    return ([] as ResourceModel[]).concat(...resources, ...dataSources);
+    const ephemeralResources = Object.entries(
+      provider.ephemeral_resource_schemas || {},
+    ).map(([type, resource]) =>
+      this.resourceParser.parse(
+        fqpn,
+        `ephemeral_${type}`,
+        resource,
+        "ephemeral_resource",
+        constraint,
+      ),
+    );
+
+    // CRITICAL: ephemeral resources must be appended AFTER resources and data
+    // sources - uniqueClassName dedup is order-dependent and existing
+    // prebuilt snapshots must not churn.
+    return ([] as ResourceModel[]).concat(
+      ...resources,
+      ...dataSources,
+      ...ephemeralResources,
+    );
   }
 
   public getClassNameForResource(terraformType: string) {
@@ -225,6 +255,16 @@ export class TerraformProviderGenerator {
       this.emitResourceReadme(resourceModel);
     });
 
+    // Built before the provider class is emitted (rather than after, as
+    // resources/data sources/ephemeral resources above already are) so that
+    // the model can be attached to providerResource and picked up by
+    // ResourceEmitter while it still emits the provider class file below -
+    // see the engineering brief for why this ordering matters.
+    const providerFunctionsModel = buildProviderFunctionsModel(
+      name,
+      provider.functions,
+    );
+
     if (provider.provider) {
       const providerResource = this.resourceParser.parse(
         fqpn,
@@ -239,12 +279,38 @@ export class TerraformProviderGenerator {
         providerResource.terraformProviderName = constraint.name;
       }
       providerResource.providerVersion = providerVersion;
+
+      if (providerFunctionsModel) {
+        assertNoFunctionsGetterCollision(
+          name,
+          providerResource.attributes.map((att) => att.name),
+        );
+        providerResource.providerFunctionsModel = providerFunctionsModel;
+      }
+
       files.push(this.emitResource(providerResource));
       this.emitResourceReadme(providerResource);
     }
 
+    if (providerFunctionsModel) {
+      files.push(this.emitProviderFunctions(name, providerFunctionsModel));
+    }
+
     this.emitIndexFile(name, files);
     this.emitLazyIndexFile(name, files);
+  }
+
+  private emitProviderFunctions(
+    provider: ProviderName,
+    model: ProviderFunctionsModel,
+  ): string {
+    const filePath = `providers/${provider}/provider-functions/index.ts`;
+    this.code.openFile(filePath);
+    this.code.line(`// generated from provider function schema`);
+    this.code.line();
+    this.providerFunctionsEmitter.emit(model);
+    this.code.closeFile(filePath);
+    return filePath;
   }
 
   private emitResourceReadme(resource: ResourceModel): void {
