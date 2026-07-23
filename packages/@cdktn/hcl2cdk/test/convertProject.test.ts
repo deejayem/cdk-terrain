@@ -80,14 +80,14 @@ app.synth();`,
           "upgrade:next": "npm i cdktn@next cdktn-cli@next"
         },
         "engines": {
-          "node": ">=20.9"
+          "node": ">=22.0"
         },
         "dependencies": {
           "cdktn": "latest",
           "constructs": "^10.3.0"
         },
         "devDependencies": {
-          "@types/node": "^14.0.26",
+          "@types/node": "^22.20.1",
           "typescript": "^5.4.5",
           "cdktn-cli": "${CDKTF_CLI}"
         }

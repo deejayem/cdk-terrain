@@ -16,16 +16,15 @@
     "upgrade:next": "npm i cdktn@next cdktn-cli@next"
   },
   "engines": {
-    "node": ">=20.9"
+    "node": ">=22.0"
   },
   "dependencies": {
-    "cdktf": "0.21.0",
     "cdktn": "workspace:*",
     "constructs": "10.6.0"
   },
   "devDependencies": {
     "@types/jest": "30.0.0",
-    "@types/node": "20.17.51",
+    "@types/node": "22.20.1",
     "cdktn-cli": "workspace:*",
     "jest": "^30.3.0",
     "ts-node": "10.9.1",
